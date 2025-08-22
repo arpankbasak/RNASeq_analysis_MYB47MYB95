@@ -1,0 +1,203 @@
+rm(list = ls())
+
+options(warn = 1,
+       mc.cores = 8)
+
+pkgs <- c("tidyverse", "VennDiagram")
+lapply(pkgs, require, character.only = TRUE)
+
+# Set path
+path = "/home/abasak/git_repo_myb/rna_seq/"
+setwd(path)
+param <- "./scripts/R_scripts/parameters.R"
+source(param)
+
+# Raad in data
+load(paste(out.path, "/edger_objects.plotting.Rdata", sep = ""))
+
+# Cluster genes on the basis of LFC- expression
+idx <- str_detect(colnames(logFC_P), "^genotype") & str_detect(colnames(logFC_P), "_logFC$")
+d <- dist(logFC_P[,idx])
+clust_gene_lfc <- hclust(d, method = "ward.D")
+gene_clusters_lfc <- row.names(logFC_P[,idx])[clust_gene_lfc$order]
+
+# Differential Gene Data carpenting
+idx <- str_detect(colnames(logFC_P), "^genotype")
+df_lfc <- logFC_P[,idx] %>% 
+            add_column(gene_id = row.names(logFC_P[,idx]), .before = 1) %>%
+            gather(key = "key", value = "val", convert = FALSE, -gene_id) %>%
+            separate(key, into = c("x1", "x2", "genotype", "treatment", "col"), convert = FALSE, sep = "_") %>%
+            spread(key = "col", value = "val", convert = FALSE) %>%
+            select(-x1,-x2) %>%
+            mutate(gene_id = factor(gene_id, levels = gene_clusters_lfc)) %>%
+            data.frame(.)
+
+df_lfc %>% filter(PValue < alpha) %>% 
+            arrange(desc(PValue)) %>%
+            data.frame(.) %>%
+            write.table(., paste(out.path, "/DEG-LFC-P_edger-genotype.txt", sep = ""), sep = "\t")
+
+# Make factors
+df_lfc$genotype <- factor(df_lfc$genotype, levels= genotype$short)
+df_lfc$treatment <- factor(df_lfc$treatment, levels= treatment$name)
+df_lfc$sig <- as.factor(ifelse(df_lfc$PValue < alpha, 1 * sign(df_lfc$logFC), 0))
+
+message("Spilling LFC heatmap ...")
+# PLot Canvas for LFC
+df_lfc %>% ggplot(aes(x = treatment, y = gene_id, fill = saturate(logFC))) +
+    geom_tile(alpha = 1, width = 0.6) +
+    facet_grid(~ genotype, scale = "free_x", space = "free_x", switch = "x") +
+    scale_fill_gradient2(low = gradient.low, 
+                         mid = gradient.mid,
+                         high = gradient.high, 
+                         na.value = gradient.na) +
+    theme_AKB +
+    theme(axis.text.x = element_text(size = 16, vjust = 0, face = "bold"),
+          axis.text.y = element_blank(),
+          strip.text.x = element_text(size = 16, vjust = 0, face = "bold"),
+          legend.text = element_text(size = 6)) +
+    labs(x = "",
+         y = "",
+         fill = "log2(Fold_Change) vs Col-0") +
+    ggsave(paste(fig.path, "/LFC-edger_genotype_lfc-clustered_heatmap.png", sep = ""), 
+           dpi = 300, 
+           device = "png", 
+           height = 30, 
+           width = 4, limitsize = F)
+
+message("Spilling LFC heatmap gold standards ...")
+# Those which are significant
+df_lfc %>% ggplot(aes(x = treatment, y = gene_id, fill = sig)) +
+    geom_tile(alpha = 1, width = 0.6) +
+    facet_grid(~ genotype, scale = "free_x", space = "free_x", switch = "x") +
+    scale_fill_manual(values = c(`0` = gradient.na,
+                                 `1` = gradient.sig.high, 
+                                 `-1` = gradient.sig.low),
+                     labels = c(`0` = "Not Significant",
+                                 `1` = "Upregulated", 
+                                 `-1` = "Downregulated")) +
+    theme_AKB +
+    theme(axis.text.x = element_text(size = 16, angle = 30, vjust = 0, face = "bold"),
+          axis.text.y = element_blank(),
+          strip.text.x = element_text(size = 16, vjust = 0, face = "bold"),
+          legend.text = element_text(size = 6)) +
+    labs(x = "",
+         y = "",
+         fill = paste("FDR < ", alpha, "vs Col-0", sep = "")) +
+    ggsave(paste(fig.path, "/LFC-sig[", alpha,"]-edger_genotype_lfc-clustered_heatmap.png", sep = ""), 
+           dpi = 300, 
+           device = "png", 
+           height = 30, 
+           width = 4, limitsize = F)
+    
+message("Spilling Venn Diagrams for differentially regulated genes ...")
+# Plot Venn diagram for differential genes
+idx <- str_detect(colnames(DEGs), "^genotype")
+df_DEG <- DEGs[,idx]
+
+regulated <- list(
+    myb_dw = row.names(df_DEG)[which(df_DEG[,str_detect(colnames(df_DEG), "myb_DW")] != 0)], 
+    myc_dw = row.names(df_DEG)[which(df_DEG[,str_detect(colnames(df_DEG), "myc.tKO_DW")] != 0)], 
+    myb_ja = row.names(df_DEG)[which(df_DEG[,str_detect(colnames(df_DEG), "myb_JA")] != 0)], 
+    myc_ja = row.names(df_DEG)[which(df_DEG[,str_detect(colnames(df_DEG), "myc.tKO_JA")] != 0)] 
+)
+
+# DEGs
+VennDiagram::venn.diagram(x = regulated,
+                          category.names =names(regulated),
+                          filename = paste(fig.path, "/DEGs-all_edgeR_genotype_VenD.png", sep = ""),
+                          imagetype = "png",
+                          sigdigs = 2,
+                          hyper.test = TRUE, 
+                          lower.tail = TRUE,
+                          output = T,
+                          height = 1000,
+                          width = 1000,
+                          resolution = 300,
+                          lwd = 3,
+                          lty = "blank",
+                          fill = col.pal,
+                          cex = 0.2,
+                          fontface = "bold",
+                          fontfamily = "sans",
+                          cat.cex = 0.4,
+                          cat.fontface = "bold",
+                          cat.default.pos = "outer", 
+                          main = "Differentially Expressed Genes - compared to Col-0", 
+                          print.mode = "percent",
+                          main.cex = 0.4
+
+)
+upregulated <- list(
+    myb_dw = row.names(df_DEG)[which(df_DEG[,str_detect(colnames(df_DEG), "myb_DW")] == 1)], 
+    myc_dw = row.names(df_DEG)[which(df_DEG[,str_detect(colnames(df_DEG), "myc.tKO_DW")] == 1)],
+    myb_ja = row.names(df_DEG)[which(df_DEG[,str_detect(colnames(df_DEG), "myb_JA")] == 1)], 
+    myc_ja = row.names(df_DEG)[which(df_DEG[,str_detect(colnames(df_DEG), "myc.tKO_JA")] == 1)]
+    )
+
+# Upregulated
+VennDiagram::venn.diagram(x = upregulated,
+                          category.names = names(upregulated),
+                          filename = paste(fig.path, "/DEGs-up_edgeR_genotype_VenD.png", sep = ""),
+                          imagetype = "png",
+                          sigdigs = 2,
+                          hyper.test = TRUE, 
+                          lower.tail = TRUE,
+                          output = T,
+                          height = 1000,
+                          width = 1000,
+                          resolution = 300,
+                          lwd = 3,
+                          lty = "blank",
+                          fill = col.pal,
+                          cex = 0.2,
+                          fontface = "bold",
+                          fontfamily = "sans",
+                          cat.cex = 0.4,
+                          cat.fontface = "bold",
+                          cat.default.pos = "outer", 
+                          main = "Upregulated Genes - compared to Col-0", 
+                          print.mode = "percent",
+                          main.cex = 0.4
+
+)
+downregulated <- list(
+    myb_dw = row.names(df_DEG)[which(df_DEG[,str_detect(colnames(df_DEG), "myb_DW")] == -1)], 
+    myc_dw = row.names(df_DEG)[which(df_DEG[,str_detect(colnames(df_DEG), "myc.tKO_DW")] == -1)],  
+    myb_ja = row.names(df_DEG)[which(df_DEG[,str_detect(colnames(df_DEG), "myb_JA")] == -1)], 
+    myc_ja = row.names(df_DEG)[which(df_DEG[,str_detect(colnames(df_DEG), "myc.tKO_JA")] == -1)] 
+)
+
+# Downregulated
+VennDiagram::venn.diagram(x = downregulated,
+                          category.names = names(downregulated),
+                          filename = paste(fig.path, "/DEGs-down_edgeR_genotype_VenD.png", sep = ""),
+                          imagetype = "png",
+                          sigdigs = 2,
+                          hyper.test = TRUE, 
+                          lower.tail = TRUE,
+                          output = T,
+                          height = 1000,
+                          width = 1000,
+                          resolution = 300,
+                          lwd = 3,
+                          lty = "blank",
+                          fill = col.pal,
+                          cex = 0.2,
+                          fontface = "bold",
+                          fontfamily = "sans",
+                          cat.cex = 0.4,
+                          cat.fontface = "bold",
+                          cat.default.pos = "outer", 
+                          main = "Downregulated Genes - compared to Col-0", 
+                          print.mode = "percent",
+                          main.cex = 0.4
+
+)
+message("DONE")
+# save list of genes in an object for GSET analysis
+save(list = c("regulated", "downregulated", "upregulated"),
+     file = paste(out.path, "/DEG-list_edger-genotype.Rdata", sep = ""))
+
+# END OF SCRIPT
+sessionInfo()
